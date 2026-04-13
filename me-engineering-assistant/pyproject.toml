@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "me-engineering-assistant"
+version = "0.1.0"
+description = "Multi-source RAG agent for ECU engineering documentation"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-community>=0.3.0",
+    "langchain-chroma>=0.1.0",
+    "langgraph>=0.2.0",
+    "chromadb>=0.5.0",
+    "mlflow>=2.15.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pylint>=3.0",
+]
+databricks = [
+    "langchain-databricks>=0.1.0",
+    "databricks-sdk>=0.30.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+markers = [
+    "integration: tests that require a live API key (deselect with -m 'not integration')",
+]
