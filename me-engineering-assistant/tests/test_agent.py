@@ -25,7 +25,8 @@ def test_agent_creates_without_error(agent):
 def test_single_source_query_returns_temperature(agent):
     """A single-source ECU-700 query should return the +85°C specification."""
     from me_assistant.agent.graph import query_agent  # pylint: disable=import-outside-toplevel
-    answer = query_agent(agent, "What is the maximum operating temperature for the ECU-750?")
+    result = query_agent(agent, "What is the maximum operating temperature for the ECU-750?")
+    answer = result["answer"]
     assert answer is not None
     assert len(answer) > 20
     assert any(kw in answer for kw in ["85", "°C", "temperature"]), (
@@ -37,7 +38,8 @@ def test_single_source_query_returns_temperature(agent):
 def test_cross_series_query_references_both_models(agent):
     """A cross-series query should reference both ECU-750 and ECU-850 data."""
     from me_assistant.agent.graph import query_agent  # pylint: disable=import-outside-toplevel
-    answer = query_agent(agent, "Compare the CAN bus capabilities of ECU-750 and ECU-850.")
+    result = query_agent(agent, "Compare the CAN bus capabilities of ECU-750 and ECU-850.")
+    answer = result["answer"]
     assert any(kw in answer for kw in ["750", "ECU-750"]), (
         "Answer should reference ECU-750"
     )
@@ -54,8 +56,9 @@ def test_response_time_under_10_seconds(agent):
     """Agent must respond within the 10-second SLA for a simple query."""
     from me_assistant.agent.graph import query_agent  # pylint: disable=import-outside-toplevel
     t_start = time.monotonic()
-    query_agent(agent, "How much RAM does the ECU-850 have?")
+    result = query_agent(agent, "How much RAM does the ECU-850 have?")
     elapsed = time.monotonic() - t_start
+    assert result["answer"] is not None
     assert elapsed < 10.0, (
         f"Response took {elapsed:.2f}s — exceeds the 10-second SLA"
     )

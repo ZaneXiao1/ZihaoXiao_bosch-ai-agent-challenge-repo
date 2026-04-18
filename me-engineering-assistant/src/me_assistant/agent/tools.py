@@ -15,53 +15,37 @@ from langchain_core.tools import tool
 logger = logging.getLogger(__name__)
 
 
-def _retrieve_with_fallback(retriever, full_doc_content: str, query: str) -> str:
-    """Retrieve relevant chunks, falling back to full document if quality is low.
-
-    Since the total corpus is only ~6 KB, passing the full document as context
-    costs ~1 500 tokens — well within any LLM context window. This guarantees
-    correctness even when a relevant chunk scores poorly in embedding similarity
-    (e.g. "OTA not supported" vs. "which supports OTA").
+def _retrieve_chunks(retriever, query: str) -> str:
+    """Retrieve relevant chunks from the vector store.
 
     Args:
         retriever: LangChain retriever to query.
-        full_doc_content: Full concatenated document text for fallback use.
         query: The user's natural-language search query.
 
     Returns:
-        Retrieved chunk text, or full document content when retrieval quality
-        is insufficient.
+        Retrieved chunk text joined by double newlines.
     """
     try:
         docs = retriever.invoke(query)
     except Exception as exc:  # pylint: disable=broad-except
-        logger.warning(
-            "Retriever raised %s, using full-document fallback: %s",
+        logger.error(
+            "Retriever raised %s: %s",
             type(exc).__name__, exc,
         )
-        return full_doc_content
+        raise
 
     if not docs:
-        logger.debug("No documents retrieved — returning full document fallback.")
-        return full_doc_content
+        logger.debug("No documents retrieved for query: %s", query)
+        return ""
 
-    retrieved_text = "\n\n".join(doc.page_content for doc in docs)
-
-    if len(retrieved_text) < 200:
-        logger.debug(
-            "Retrieved text is only %d chars — returning full document fallback.",
-            len(retrieved_text),
-        )
-        return full_doc_content
-
-    return retrieved_text
+    return "\n\n".join(doc.page_content for doc in docs)
 
 
 def create_tools(vector_stores: dict) -> list:
     """Create LangChain retrieval tools with injected vector stores.
 
-    Uses closures to bind retriever and raw-doc references into each tool
-    function, keeping the tool signatures clean for LangGraph.
+    Uses closures to bind retriever references into each tool function,
+    keeping the tool signatures clean for LangGraph.
 
     Args:
         vector_stores: Dict returned by :func:`~me_assistant.documents.store.build_vector_stores`.
@@ -70,8 +54,6 @@ def create_tools(vector_stores: dict) -> list:
         List of two :class:`~langchain_core.tools.BaseTool` instances:
         ``[search_ecu_700_docs, search_ecu_800_docs]``.
     """
-    raw_700: str = vector_stores["raw_docs"]["ecu_700"]
-    raw_800: str = vector_stores["raw_docs"]["ecu_800"]
     retriever_700 = vector_stores["ecu_700"].as_retriever(search_kwargs={"k": 3})
     retriever_800 = vector_stores["ecu_800"].as_retriever(search_kwargs={"k": 3})
 
@@ -91,8 +73,14 @@ def create_tools(vector_stores: dict) -> list:
         Returns:
             Relevant documentation excerpts from ECU-700 series manuals.
         """
-        content = _retrieve_with_fallback(retriever_700, raw_700, query)
-        return f"[Source: ECU-700_Series_Manual.md]\n{content}"
+        content = _retrieve_chunks(retriever_700, query)
+        return (
+            f"[Source: ECU-700_Series_Manual.md]\n"
+            f"[IMPORTANT: Only the attributes explicitly mentioned below exist "
+            f"in this documentation. If the answer to the user's question is not "
+            f"found in the text below, the information is NOT available.]\n\n"
+            f"{content}"
+        )
 
     @tool
     def search_ecu_800_docs(query: str) -> str:
@@ -111,7 +99,13 @@ def create_tools(vector_stores: dict) -> list:
         Returns:
             Relevant documentation excerpts from ECU-800 series manuals.
         """
-        content = _retrieve_with_fallback(retriever_800, raw_800, query)
-        return f"[Source: ECU-800_Series_Base.md, ECU-800_Series_Plus.md]\n{content}"
+        content = _retrieve_chunks(retriever_800, query)
+        return (
+            f"[Source: ECU-800_Series_Base.md, ECU-800_Series_Plus.md]\n"
+            f"[IMPORTANT: Only the attributes explicitly mentioned below exist "
+            f"in this documentation. If the answer to the user's question is not "
+            f"found in the text below, the information is NOT available.]\n\n"
+            f"{content}"
+        )
 
     return [search_ecu_700_docs, search_ecu_800_docs]

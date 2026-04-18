@@ -179,10 +179,18 @@ def judge_answer(
 def _query_agent_with_context(agent, question: str) -> tuple[str, str]:
     """Run a query and return (final_answer, retrieved_context).
 
-    Invokes the agent and inspects the full message trace to extract
-    both the final answer and the tool-retrieved context.
+    Invokes the agent with the full AgentState (messages, iteration_count,
+    sources_queried) and inspects the message trace to extract both the
+    final answer and the tool-retrieved context.
     """
-    result = agent.invoke({"messages": [("user", question)]})
+    from langchain_core.messages import HumanMessage
+
+    initial_state = {
+        "messages": [HumanMessage(content=question)],
+        "iteration_count": 0,
+        "sources_queried": [],
+    }
+    result = agent.invoke(initial_state)
     messages = result["messages"]
 
     final_answer = messages[-1].content

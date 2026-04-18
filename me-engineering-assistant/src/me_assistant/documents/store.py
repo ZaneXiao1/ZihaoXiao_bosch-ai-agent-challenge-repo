@@ -45,7 +45,6 @@ def build_vector_stores(data_dir: Optional[str] = None) -> dict:
         Dict with keys:
         - ``"ecu_700"``: :class:`~langchain_chroma.Chroma` store
         - ``"ecu_800"``: :class:`~langchain_chroma.Chroma` store
-        - ``"raw_docs"``: ``{"ecu_700": str, "ecu_800": str}`` for fallback
 
     Raises:
         DocumentLoadError: If markdown files cannot be found or read.
@@ -100,13 +99,9 @@ def build_vector_stores(data_dir: Optional[str] = None) -> dict:
             f"unavailable or rate-limited): {exc}"
         ) from exc
 
-    raw_700 = "\n\n".join(d.page_content for d in docs_700)
-    raw_800 = "\n\n".join(d.page_content for d in docs_800)
-
     result = {
         "ecu_700": store_700,
         "ecu_800": store_800,
-        "raw_docs": {"ecu_700": raw_700, "ecu_800": raw_800},
     }
     _STORE_CACHE["stores"] = result
     logger.info("Vector stores built and cached.")

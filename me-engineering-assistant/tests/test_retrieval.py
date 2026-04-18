@@ -63,7 +63,6 @@ def test_build_vector_stores_returns_two_indices():
     stores = build_vector_stores(DATA_DIR)
     assert "ecu_700" in stores
     assert "ecu_800" in stores
-    assert "raw_docs" in stores
 
 
 @pytest.mark.integration

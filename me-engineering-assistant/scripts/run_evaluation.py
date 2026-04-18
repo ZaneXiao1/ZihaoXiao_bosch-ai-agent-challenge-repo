@@ -119,8 +119,12 @@ def run_evaluation() -> None:
         print(f"  Question : {question}")
 
         t0 = time.monotonic()
-        answer = query_agent(agent, question)
+        result = query_agent(agent, question)
         elapsed = time.monotonic() - t0
+
+        answer = result["answer"]
+        iter_count = result["iteration_count"]
+        sources = result["sources_queried"]
 
         passed = _passes(qid, answer)
         status = "PASS" if passed else "FAIL"
@@ -129,10 +133,12 @@ def run_evaluation() -> None:
         preview = answer[:300] + ("…" if len(answer) > 300 else "")
         print(f"  Answer   : {preview}")
         print(f"  Expected : {expected[:120]}")
+        print(f"  Iterations: {iter_count}  Sources: {sources}")
         print(f"  Result   : [{status}]  {elapsed:.2f}s{slow_flag}")
         print()
 
-        results.append({"id": qid, "passed": passed, "time": elapsed})
+        results.append({"id": qid, "passed": passed, "time": elapsed,
+                         "iteration_count": iter_count, "sources_queried": sources})
 
     passed_count = sum(1 for r in results if r["passed"])
     under_10_count = sum(1 for r in results if r["time"] < 10.0)

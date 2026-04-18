@@ -7,9 +7,12 @@ This module packages the LangGraph agent as an MLflow model that can be:
 3. Called via REST API when deployed on Databricks
 """
 import logging
+from typing import Any, Optional
 
 import mlflow
 import pandas as pd
+from mlflow.models.signature import ModelSignature
+from mlflow.types.schema import ColSpec, Schema
 
 from me_assistant.agent.graph import create_agent, query_agent
 from me_assistant.exceptions import (
@@ -22,11 +25,25 @@ from me_assistant.exceptions import (
 
 logger = logging.getLogger(__name__)
 
+# Pinned to match pyproject.toml. faiss was never actually used — the
+# project uses langchain-chroma; shipping faiss-cpu would break serving.
+_PIP_REQUIREMENTS = [
+    "langchain>=0.3.0",
+    "langchain-openai>=0.2.0",
+    "langchain-community>=0.3.0",
+    "langchain-chroma>=0.1.0",
+    "langgraph>=0.2.0",
+    "chromadb>=0.5.0",
+    "mlflow>=2.15.0",
+    "pydantic>=2.0",
+    "python-dotenv>=1.0.0",
+]
+
 
 class MEAssistantModel(mlflow.pyfunc.PythonModel):
     """MLflow pyfunc wrapper for the ECU Engineering Assistant."""
 
-    def load_context(self, context):
+    def load_context(self, context: mlflow.pyfunc.PythonModelContext) -> None:
         """Initialise the agent when the model is loaded.
 
         Called once at model load time, not on every predict() call.
@@ -50,7 +67,12 @@ class MEAssistantModel(mlflow.pyfunc.PythonModel):
                 f"Failed to initialise agent: {exc}"
             ) from exc
 
-    def predict(self, context, model_input, params=None):
+    def predict(
+        self,
+        context: mlflow.pyfunc.PythonModelContext,
+        model_input: Any,
+        params: dict[str, Any] | None = None,
+    ) -> list[str]:
         """Process user queries and return agent responses.
 
         Args:
@@ -84,8 +106,8 @@ class MEAssistantModel(mlflow.pyfunc.PythonModel):
         answers = []
         for question in questions:
             try:
-                answer = query_agent(self.agent, question)
-                answers.append(answer)
+                result = query_agent(self.agent, question)
+                answers.append(result["answer"])
             except ConfigurationError as exc:
                 logger.error("Configuration error for '%s': %s", question, exc)
                 answers.append(f"Configuration error: {exc}")
@@ -111,29 +133,57 @@ class MEAssistantModel(mlflow.pyfunc.PythonModel):
         return answers
 
 
-def log_model() -> str:
-    """Log the MEAssistantModel to MLflow.
+def _build_signature() -> ModelSignature:
+    """Return the MLflow signature: DataFrame[question:str] -> list[str]."""
+    input_schema = Schema([ColSpec("string", "question")])
+    output_schema = Schema([ColSpec("string")])
+    return ModelSignature(inputs=input_schema, outputs=output_schema)
+
+
+def _build_input_example() -> pd.DataFrame:
+    """Return a minimal input example for the model signature."""
+    return pd.DataFrame(
+        {"question": ["What is the maximum operating temperature for the ECU-750?"]}
+    )
+
+
+def log_model(
+    artifact_path: str = "me-assistant-model",
+    registered_model_name: Optional[str] = None,
+) -> mlflow.models.model.ModelInfo:
+    """Log the MEAssistantModel to the active MLflow run.
+
+    Must be called inside an active ``mlflow.start_run()`` context so that
+    the caller (e.g. ``train_and_log_model.py``) owns run lifecycle and
+    parameter/metric logging.
+
+    Args:
+        artifact_path: Path under the run's artifact root.
+        registered_model_name: If provided, register the model in MLflow
+            Model Registry under this name.
 
     Returns:
-        The MLflow ``run_id`` for the logged model.
+        The :class:`~mlflow.models.model.ModelInfo` returned by
+        :func:`mlflow.pyfunc.log_model`.
     """
-    with mlflow.start_run(run_name="me-engineering-assistant") as run:
-        mlflow.pyfunc.log_model(
-            artifact_path="me-assistant-model",
-            python_model=MEAssistantModel(),
-            pip_requirements=[
-                "langchain>=0.3.0",
-                "langchain-openai>=0.2.0",
-                "langchain-community>=0.3.0",
-                "langgraph>=0.2.0",
-                "faiss-cpu>=1.7.4",
-                "mlflow>=2.15.0",
-            ],
-            artifacts={
-                "ecu_700_doc": "src/me_assistant/data/ECU-700_Series_Manual.md",
-                "ecu_800_base_doc": "src/me_assistant/data/ECU-800_Series_Base.md",
-                "ecu_800_plus_doc": "src/me_assistant/data/ECU-800_Series_Plus.md",
-            },
+    if mlflow.active_run() is None:
+        raise RuntimeError(
+            "log_model() must be called inside an active mlflow.start_run() "
+            "context — caller is responsible for run lifecycle."
         )
-        logger.info("Model logged with run_id: %s", run.info.run_id)
-        return run.info.run_id
+
+    model_info = mlflow.pyfunc.log_model(
+        artifact_path=artifact_path,
+        python_model=MEAssistantModel(),
+        pip_requirements=_PIP_REQUIREMENTS,
+        artifacts={
+            "ecu_700_doc": "src/me_assistant/data/ECU-700_Series_Manual.md",
+            "ecu_800_base_doc": "src/me_assistant/data/ECU-800_Series_Base.md",
+            "ecu_800_plus_doc": "src/me_assistant/data/ECU-800_Series_Plus.md",
+        },
+        signature=_build_signature(),
+        input_example=_build_input_example(),
+        registered_model_name=registered_model_name,
+    )
+    logger.info("Model logged: uri=%s", model_info.model_uri)
+    return model_info

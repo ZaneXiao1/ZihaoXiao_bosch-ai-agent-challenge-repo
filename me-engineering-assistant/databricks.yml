@@ -1,0 +1,96 @@
+# Databricks Asset Bundle for the ME Engineering Assistant.
+#
+# What this bundle does:
+#   1. Builds a Python wheel from this project (via `artifacts`).
+#   2. Deploys the wheel + source tree to the target Databricks workspace.
+#   3. Defines a job that runs scripts/train_and_log_model.py, which:
+#        - Logs the MLflow pyfunc model (see src/me_assistant/model/mlflow_wrapper.py)
+#        - Records params, chunk counts, and smoke-test latency metrics
+#        - Optionally registers the model under `var.registered_model_name`
+#
+# Usage (after installing the Databricks CLI and running `databricks configure`):
+#   databricks bundle validate -t dev
+#   databricks bundle deploy   -t dev
+#   databricks bundle run      -t dev train_and_log_model
+#
+# Secrets expected in the scope referenced below (var.secret_scope):
+#   - openai_api_key         (only if MODEL_PROVIDER=openai)
+#   - databricks_llm_endpoint, databricks_embedding_endpoint
+#     (only if MODEL_PROVIDER=databricks)
+
+bundle:
+  name: me-engineering-assistant
+
+artifacts:
+  me_assistant_wheel:
+    type: whl
+    # `python -m build` pulls build deps hermetically; no setup.py required.
+    build: python -m build --wheel
+    path: .
+
+variables:
+  model_provider:
+    description: "openai or databricks (matches me_assistant.config)."
+    default: openai
+  experiment_name:
+    description: "MLflow experiment path in the target workspace."
+    default: /Shared/me-engineering-assistant
+  registered_model_name:
+    description: "If set, the logged model is registered under this name."
+    default: me_engineering_assistant
+  secret_scope:
+    description: "Databricks secret scope holding API keys / endpoints."
+    default: me-engineering-assistant
+  node_type_id:
+    description: "Worker node type for the job cluster."
+    default: i3.xlarge
+
+resources:
+  jobs:
+    train_and_log_model:
+      name: me-engineering-assistant-train-and-log
+      tasks:
+        - task_key: train_and_log
+          job_cluster_key: job_cluster
+          spark_python_task:
+            python_file: ./scripts/train_and_log_model.py
+            parameters:
+              - --experiment-name
+              - ${var.experiment_name}
+              - --registered-model-name
+              - ${var.registered_model_name}
+          libraries:
+            - whl: ./dist/*.whl
+      job_clusters:
+        - job_cluster_key: job_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            node_type_id: ${var.node_type_id}
+            num_workers: 0
+            data_security_mode: SINGLE_USER
+            # Secrets are injected as env vars; the script reads them via os.getenv.
+            spark_env_vars:
+              MODEL_PROVIDER: ${var.model_provider}
+              OPENAI_API_KEY: "{{secrets/${var.secret_scope}/openai_api_key}}"
+              LLM_MODEL_NAME: "{{secrets/${var.secret_scope}/llm_model_name}}"
+              EMBEDDING_MODEL_NAME: "{{secrets/${var.secret_scope}/embedding_model_name}}"
+              DATABRICKS_HOST: "{{secrets/${var.secret_scope}/databricks_host}}"
+              DATABRICKS_TOKEN: "{{secrets/${var.secret_scope}/databricks_token}}"
+
+targets:
+  dev:
+    mode: development
+    default: true
+    # Workspace host is read from the active Databricks CLI profile unless
+    # overridden here, e.g.:
+    # workspace:
+    #   host: https://<your-workspace>.cloud.databricks.com
+
+  prod:
+    mode: production
+    # Production requires an explicit host so it never accidentally inherits dev.
+    # Uncomment and set before deploying:
+    # workspace:
+    #   host: https://<your-prod-workspace>.cloud.databricks.com
+    variables:
+      experiment_name: /Shared/me-engineering-assistant-prod
