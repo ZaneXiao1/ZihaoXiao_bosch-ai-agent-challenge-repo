@@ -6,10 +6,14 @@ A production-ready Retrieval-Augmented Generation (RAG) agent that answers techn
 
 ## Table of Contents
 
-1. [Architectural Design](#architectural-design)
-2. [Setup & Deployment](#setup--deployment)
-3. [Testing & Validation Strategy](#testing--validation-strategy)
-4. [Limitations & Future Work](#limitations--future-work)
+1. [Architectural Design](#1-architectural-design)
+2. [Setup & Deployment](#2-setup--deployment)
+3. [Testing & Validation Strategy](#3-testing--validation-strategy)
+4. [Limitations & Future Work](#4-limitations--future-work)
+
+---
+
+For a full directory listing with file descriptions, see [PROJECT_STRUCTURE.md](PROJECT_STRUCTURE.md).
 
 ---
 
@@ -20,34 +24,59 @@ A production-ready Retrieval-Augmented Generation (RAG) agent that answers techn
 The ME Engineering Assistant is a three-layer RAG architecture:
 
 ```
-┌──────────────────────────────────────────┐
-│  User Query (Natural Language)            │
-└──────────────────────────────┬────────────┘
-                               │
-                    ┌──────────▼─────────────┐
-                    │  LLM Agent Reasoning   │
-                    │  (Tool Selection)      │
-                    └──────────┬─────────────┘
-                               │
-            ┌──────────────────┼──────────────────┐
-            │                  │                  │
-    ┌───────▼────────┐ ┌──────▼──────┐ ┌────────▼─────────┐
-    │ ECU-700 Index  │ │ ECU-800 Index│ │ Force Answer     │
-    │ (Vec DB)       │ │ (Vec DB)     │ │ (No Tools)       │
-    └────────────────┘ └──────────────┘ └──────────────────┘
-            │                  │                  │
-            └──────────────────┼──────────────────┘
-                               │
-                    ┌──────────▼──────────┐
-                    │  LLM Answer Gen     │
-                    │  (with Citations)   │
-                    └─────────────────────┘
+                     ┌───────────────────────────┐
+                     │  User Query               │
+                     │  (Natural Language)       │
+                     └─────────────┬─────────────┘
+                                   │
+                                   ▼
+               ┌───────────────────────────────────────┐
+               │         Layer 1: LLM Reasoning        │
+               │  Agent decides which tool(s) to call  │
+               └───────────┬───────────────┬───────────┘
+                           │               │
+                           ▼               ▼
+               ┌───────────────┐ ┌─────────────────┐
+               │  Layer 2:     │ │  Layer 2:       │
+               │  ECU-700      │ │  ECU-800        │
+               │  Vector Store │ │  Vector Store   │
+               │  (Chroma)     │ │  (Chroma)       │
+               └───────┬───────┘ └────────┬────────┘
+                       │                  │
+                       └────────┬─────────┘
+                                │
+                                ▼
+               ┌───────────────────────────────────────┐
+               │       Layer 3: Answer Generation      │
+               │  LLM synthesizes answer from chunks   │
+               │  with source citations                │
+               └───────────────────────────────────────┘
 ```
 
 The system handles three key responsibilities:
 1. **LLM reasoning** — deciding which retrieval tools to invoke
 2. **Semantic search** — retrieving relevant chunks from vector stores
 3. **Answer generation** — producing grounded, cited responses
+
+### Prompt Design
+
+The agent's behavior is governed by prompts at three levels:
+
+**System Prompt** (`agent/prompts.py`) — injected once at the start of conversation, defines 10 rules across three categories:
+
+- **Retrieval discipline (Rules 1–3):** Always search before answering; single-series queries search one store, comparisons search both. Prevents the LLM from answering "from memory" without grounding.
+- **Anti-hallucination (Rules 6–7):** If a value is not in the retrieved text, say so explicitly. Includes a self-check instruction: "mentally locate the exact sentence before stating any value." Uses exact terminology from docs (e.g., "Yocto-based Linux OS" not "Linux-based OS").
+- **Answer discipline (Rules 4, 8–10):** Answer only what was asked, match response length to question complexity, use prose only (no tables/bullet lists), and include few-shot examples of well-scoped answers.
+
+**Tool-level prompts** (`agent/tools.py`) — each tool's return value is prefixed with a guardrail reminder:
+```
+[IMPORTANT: Only the attributes explicitly mentioned below exist
+in this documentation. If the answer is not found, the information
+is NOT available.]
+```
+This reinforces anti-hallucination at the point where the LLM reads retrieved context, not just in the system prompt.
+
+**Force-answer prompt** (`agent/nodes.py`) — injected as a late SystemMessage when the iteration ceiling is reached. Instructs the LLM to answer with what it already has and repeats the anti-fabrication constraint, ensuring the safety-ceiling path does not degrade answer quality.
 
 ## 1.2 Agent Graph Architecture
 
@@ -58,35 +87,39 @@ The agent is implemented as a custom LangGraph `StateGraph` with three named nod
 ### Graph Flow Diagram
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         User Question                            │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             ▼
-                    ╔═════════════════╗
-                    ║  [AGENT NODE]   ║
-                    ║ LLM + Tools     ║
-                    ║ Decides if need ║
-                    ║ tools or answer ║
-                    ╚════╤════════════╝
-                         │
-         ┌───────────────┼───────────────┐
-         │               │               │
-    No tools          Tools needed    Tools wanted
-    → Answer        & iter < 3       & iter >= 3
-         │               │               │
-         ▼               ▼               ▼
-       END         ╔═════════╗      ╔────────────╗
-    (return)       ║TOOLS    ║      ║FORCE_      ║
-                   ║NODE     ║      ║ANSWER      ║
-                   ║Search & ║      ║(no tools)  ║
-                   ║increment║      ╚──────┬─────╝
-                   ╚────┬────╝             │
-                        │                 │
-                        └────────┬────────┘
-                                 │
-                                 ▼
-                              (return)
+                        ┌──────────────────────┐
+                        │    User Question     │
+                        └──────────┬───────────┘
+                                   │
+                                   ▼
+                 ┌─────────────────────────────────────┐
+            ┌───▶│          AGENT NODE                 │
+            │    │  LLM with tools bound               │
+            │    │  Reads full conversation history    │
+            │    │  Decides: call tools or answer?     │
+            │    └──────┬──────────┬──────────┬────────┘
+            │           │          │          │
+            │     No tool_calls   Has calls  Has calls
+            │     (answer ready)  iter < 3   iter >= 3
+            │           │          │          │
+            │           ▼          │          ▼
+            │     ┌──────────┐     │   ┌──────────────┐
+            │     │   END    │     │   │ FORCE_ANSWER │
+            │     │ (return  │     │   │ LLM without  │
+            │     │  answer) │     │   │ tools bound  │
+            │     └──────────┘     │   │ (must answer │
+            │                      │   │  with what   │
+            │                      │   │  it has)     │
+            │                      │   └──────┬───────┘
+            │                      ▼          │
+            │              ┌─────────────┐    ▼
+            │              │ TOOLS NODE  │  ┌──────────┐
+            │              │ Execute     │  │   END    │
+            │              │ retrieval   │  │ (return  │
+            │              │ iter_count++│  │  answer) │
+            └──────────────┤ Return      │  └──────────┘
+              loop back    │ chunks      │
+              to agent     └─────────────┘
 ```
 
 ### State Schema
@@ -112,33 +145,17 @@ The agent is implemented as a custom LangGraph `StateGraph` with three named nod
 The loop is driven by **Agent's judgment** with **graph-enforced safety ceiling**:
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│ THE AGENT LOOP                                              │
-├─────────────────────────────────────────────────────────────┤
-│                                                             │
-│  [Agent runs]                                              │
-│      ↓                                                      │
-│  Agent sees: full conversation + all previous tool results  │
-│      ↓                                                      │
-│  Agent decides: "Do I have enough info to answer?"         │
-│      ↓                                                      │
-│  ┌─────────────────────────────────────────────────────┐   │
-│  │ IF NO tool_calls emitted:                           │   │
-│  │   → ROUTE to END (return answer now)                │   │
-│  │                                                     │   │
-│  │ ELSE IF tool_calls emitted AND iteration < 3:      │   │
-│  │   → ROUTE to tools node                            │   │
-│  │   → tools_node: execute retrieval                  │   │
-│  │   → increment iteration_count                      │   │
-│  │   → LOOP BACK to agent (agent runs again)          │   │
-│  │                                                     │   │
-│  │ ELSE IF tool_calls emitted BUT iteration >= 3:     │   │
-│  │   → ROUTE to force_answer (NOT tools!)             │   │
-│  │   → force_answer: generate answer WITHOUT tools    │   │
-│  │   → ROUTE to END                                   │   │
-│  └─────────────────────────────────────────────────────┘   │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
+Iteration 1                Iteration 2                Iteration 3 (max)
+─────────────────────    ─────────────────────    ─────────────────────
+AGENT: need more info?   AGENT: need more info?   AGENT: still wants tools?
+  → Yes, call tools        → Yes, call tools        → Blocked by ceiling
+  → TOOLS: retrieve        → TOOLS: retrieve        → FORCE_ANSWER
+  → iter_count = 1         → iter_count = 2         → Answer with what
+  → Back to AGENT ──────▶  → Back to AGENT ──────▶    it already has
+                                                     → END
+
+At ANY iteration, if AGENT decides it has enough info:
+  → No tool_calls emitted → END (return answer immediately)
 ```
 
 ### Why This Architecture
@@ -160,6 +177,17 @@ The loop is driven by **Agent's judgment** with **graph-enforced safety ceiling*
 ---
 
 ## 1.3 Retrieval Architecture
+
+### Retrieval Tools
+
+The agent has two tools, each bound to a dedicated vector store:
+
+| Tool | Covers | When Used |
+|---|---|---|
+| `search_ecu_700_docs` | ECU-700 series (ECU-750) | Single-series queries about ECU-750, or one side of a cross-series comparison |
+| `search_ecu_800_docs` | ECU-800 series (ECU-850, ECU-850b) | Single-series queries about ECU-850/850b, or one side of a cross-series comparison |
+
+The agent reads the tool docstrings and autonomously decides which tool(s) to call. For cross-series comparisons it calls both tools in a single iteration.
 
 ### Two-Layer Multi-Source Design
 
@@ -229,7 +257,7 @@ The embedding model is set to `text-embedding-3-small` (1,536 dimensions) rather
 
 ---
 
-## 1.4 Exception Hierarchy
+## 1.4 Error Handling
 
 The agent defines five custom exception types for clear error classification:
 
@@ -248,10 +276,6 @@ Each exception:
 - Includes a descriptive message
 - Is caught at the agent boundary and converted to a structured error response
 
-**Why this structure:**
-- API consumers (REST endpoint, Databricks jobs) can programmatically distinguish failure modes
-- Error messages are prefixed by category (e.g., `"Configuration error: ..."`) for routing
-- Operators can set up targeted alerts or retries
 
 ---
 
@@ -264,50 +288,13 @@ Each exception:
 **What's Ready:**
 - **MLflow pyfunc model** (`src/me_assistant/model/mlflow_wrapper.py`) — implements required `predict()` interface
 - **Manual logging script** (`scripts/train_and_log_model.py`) — executes evaluation and logs metrics to MLflow
-- **Detailed deployment specification** (Sections 2.2–2.4) — complete DAB configuration and deployment steps
+- **Detailed deployment specification** (Sections 2.2–2.3) — complete DAB configuration and deployment steps
 
 Upon receiving Databricks workspace access, the solution deploys without code changes following the DAB steps in Section 2.2.
 
----
+## 2.2 Quick Start (Local Development)
 
-## 2.2 ⭐ Quick Start (Local Development)
-
-### Prerequisites
-- Python 3.10+
-- `pip` or `uv` for package management
-- OpenAI API key (for local development)
-
-### Installation
-
-```bash
-# 1. Clone and install (editable mode for development)
-cd me-engineering-assistant
-pip install -e ".[dev]"
-
-# 2. Configure environment
-cp .env.example .env
-# Edit .env and add your OPENAI_API_KEY
-
-# 3. Verify installation
-python -c "from me_assistant.agent.graph import create_agent; print('Installation successful')"
-```
-
-### Running the Agent (Local)
-
-Start the interactive chat CLI:
-
-```bash
-python scripts/chat_cli.py
-```
-
-The script initializes the agent and displays:
-```
-Initialising ME Engineering Assistant...
-Ready. Ask a question about ECU-700 / ECU-800 documentation.
-Type 'exit' or 'quit' to stop.
-```
-
-Then type your questions at the `You>` prompt and press Enter. The agent responds immediately. Type `exit` or `quit` to end the session.
+For local installation, configuration, and running the agent, see [QUICKSTART.md](QUICKSTART.md).
 
 ---
 
@@ -397,9 +384,9 @@ All metrics, model artifacts, and evaluation logs are stored in MLflow under `/S
 **What's Implemented:**
 - **MLflow pyfunc model** (`src/me_assistant/model/mlflow_wrapper.py`) — implements required `predict()` interface for logging and serving
 - **Manual logging script** (`scripts/train_and_log_model.py`) — can be executed locally or on any Python environment to log metrics and model artifacts
-- **Detailed deployment plan** (Sections 2.1–2.2) — fully specifies how to deploy to Databricks with DAB configuration
+- **Detailed deployment plan** (Sections 2.1–2.3) — fully specifies how to deploy to Databricks with DAB configuration
 
-Upon receiving Databricks workspace access, deployment would follow the steps outlined in Section 2.2 without any code changes.
+Upon receiving Databricks workspace access, deployment would follow the steps outlined in Section 2.3 without any code changes.
 
 ---
 
@@ -642,131 +629,93 @@ Set up alerts on:
 
 ## 4.1 Current Limitations
 
-### Corpus Size & Scalability
-**Current:** The agent is optimized for 3 small documents (~11 chunks total).  
-**Limitation:** Scaling to hundreds of documents would require:
-- Persistent vector stores (Chroma persistent mode, Pinecone, Weaviate)
-- Incremental indexing pipelines (avoid rebuilding all embeddings on update)
-- Distributed chunk storage and retrieval
+### RAG & Retrieval
 
-**Why it matters:** In-memory Chroma stores scale to ~10K chunks; beyond that, memory and latency degrade.
+**Static corpus with no update mechanism.** Documents are loaded from hardcoded markdown files at startup. Adding a new ECU series or updating an existing spec requires code changes and full redeployment — there is no incremental indexing or hot-reload capability.
 
-### Chunk Granularity
-**Current:** Section-based chunking produces variable-size chunks (small preambles to large tables).  
-**Limitation:** Section boundaries don't always align with optimal retrieval granularity.
+**In-memory vector stores.** Chroma runs in-memory, which works for ~11 chunks but does not scale. Beyond ~10K chunks, memory pressure and latency degrade. A persistent vector database (pgvector, Pinecone, etc.) would be required for a production-scale corpus.
 
-**Future improvement:** Hybrid splitting — split sections on markdown level-3 headings or at ~512 tokens, but preserve table integrity via post-processing.
+**Fixed retrieval k=3.** Every query retrieves exactly 3 chunks per store regardless of question complexity. A simple factoid question wastes context on irrelevant chunks; a complex cross-series comparison may miss relevant ones.
 
-### Evaluation Cost
-**Current:** Full LLM-as-judge eval on 60 questions costs ~$0.05–$0.10.  
-**Limitation:** High-frequency CI (e.g., on every commit) becomes expensive.
+**Repeated retrieval returns identical results.** Multi-round retrieval against the same store with the same query returns the same chunks. There is no query rewriting, chunk deduplication, or k-expansion between iterations, so repeated rounds on the same store add no new information.
 
-**Future approach:** Tiered evaluation
-- Fast tier: 10-question keyword check (free)
-- Full tier: 60-question GPT-4o eval (on-demand, e.g., before release)
-- Budget: ~$10/month for daily full evals
+**Variable chunk granularity.** Section-based chunking produces chunks ranging from short preambles to large tables. Section boundaries don't always align with optimal retrieval granularity, and some chunks carry too little signal for the embedding model.
 
-### Agent Iteration Limit
-**Current:** Hard-coded ceiling of 3 retrieval rounds.  
-**Limitation:** Some complex queries might benefit from iterative refinement beyond 3 rounds.
+### Agent Framework
 
-**Future improvement:** Dynamic iteration limit based on query complexity (e.g., estimated via embedding similarity or LLM metadata)
+**Hard-coded iteration ceiling.** `MAX_ITERATIONS=3` is a fixed constant. Complex queries that legitimately need more retrieval rounds are forced to answer early via `force_answer_node`, potentially degrading answer quality.
 
-### No Confidence Scoring
-**Current:** Agent always produces an answer, even if retrieved context is weak.  
-**Limitation:** API consumers cannot distinguish high-confidence from low-confidence answers.
+**No error recovery in tool execution.** If a tool call fails (API timeout, empty retrieval), the error string is returned to the LLM as a `ToolMessage`. The agent has no explicit mechanism to retry with a different query, switch tools, or gracefully degrade — it simply sees the error and improvises.
 
-**Future enhancement:** Add a confidence threshold check — if retrieved context similarity falls below a threshold, route the query to human review or return a "confidence too low" signal.
+**No session memory.** Each query starts with a fresh state (`iteration_count=0`, empty `messages`). The agent cannot reference prior questions in a session, so multi-turn workflows like "what about the ECU-850?" after discussing ECU-750 require full context re-specification.
 
-### Limited Context Window Usage
-**Current:** Each chunk carries a context prefix, but doesn't use the full LLM context window.  
-**Limitation:** On complex multi-part questions, passing more context (e.g., all retrieved chunks + full documents) might improve answers.
+**Soft guardrails for out-of-scope queries.** Rejection of irrelevant questions relies entirely on the LLM following SYSTEM_PROMPT Rule 6. There is no hard classifier or input filter — a sufficiently adversarial prompt could bypass the instruction.
 
-**Future optimization:** Adaptive context packing — estimate answer quality from initial retrieval; if low, pack additional context and re-prompt.
+### Cost & Operations
+
+**No query caching.** Every query re-embeds and re-searches the vector store, even for identical questions asked minutes apart. At scale, this wastes the majority of embedding API calls on repeated queries.
+
+**No cost budget or circuit breaker.** Token usage is logged to MLflow after evaluation runs, but there is no per-query cost tracking or budget enforcement at runtime. A burst of queries has no throttle mechanism.
+
+**Single-provider dependency.** If the configured LLM or embedding API (OpenAI or Databricks) is down, the entire agent fails to initialize. There is no fallback provider or cached-embedding degradation path.
+
+### Evaluation
+
+**No confidence scoring.** The agent always produces an answer, even when retrieved context is weak or irrelevant. API consumers cannot distinguish high-confidence from low-confidence responses.
+
+**LLM-as-judge without calibration.** The judge model (GPT-4o) scores across 5 dimensions on a 1–5 scale, but has not been calibrated against human raters. Score consistency depends on the judge model version, which may shift with upstream updates.
+
+**Equal-weight scoring dimensions.** All 5 evaluation dimensions (correctness, completeness, faithfulness, relevance, format compliance) are weighted equally. For a safety-critical engineering assistant, faithfulness (no hallucination) should carry more weight than format compliance.
+
+**No failure-mode analysis.** Evaluation only scores successful answers. There are no metrics for false rejections (saying "not available" when the info exists), over-confident answers, or per-category breakdowns (e.g., OTA questions vs. temperature questions).
 
 ---
 
 ## 4.2 Potential Enhancements
 
-### Query Expansion & Rewriting
-**Idea:** Use an LLM to expand or rephrase user queries before embedding, improving semantic overlap.
+### RAG & Retrieval
 
-**Implementation:**
-```python
-# Before retrieval
-expanded_query = llm.invoke(
-    "Rephrase this query to improve semantic search: " + user_question
-)
-```
+**Query rewriting between iterations.** Before each retrieval round, use the LLM to rephrase the query based on what was already retrieved. This makes multi-round retrieval meaningful — each round targets information gaps rather than repeating the same search.
 
-**Cost:** One additional LLM call per query (~0.01 tokens).  
-**Benefit:** Improved retrieval recall for paraphrased or ambiguous queries.
+**Adaptive k selection.** Adjust the number of retrieved chunks based on query complexity. Simple factoid questions use k=1–2; cross-series comparisons use k=5+. Can be implemented via a lightweight classifier or LLM metadata on the query.
 
-### Metadata Filtering
-**Idea:** Use metadata filters (series, model) to narrow search space before embedding.
+**Hybrid retrieval (BM25 + vector).** Combine keyword-based retrieval with semantic search. BM25 handles exact technical terms (e.g., "LPDDR4") that embedding models may struggle with, while vector search handles paraphrased queries.
 
-**Implementation:**
-```python
-# Add where clause to Chroma search
-results = vector_store.similarity_search(
-    query,
-    where={"series": "ECU-800"}
-)
-```
+**Persistent vector store.** Replace in-memory Chroma with a persistent store (PostgreSQL + pgvector, Pinecone) to support larger corpora and enable incremental indexing without full rebuilds.
 
-**Benefit:** Faster retrieval, reduced hallucination on cross-series queries.  
-**Trade-off:** Requires explicit series mention in user query.
+### Agent Framework
 
-### Hybrid Retrieval (BM25 + Vector)
-**Idea:** Combine keyword-based retrieval (BM25) with vector search for robustness.
+**Dynamic iteration limit.** Replace the fixed `MAX_ITERATIONS=3` with a cost-aware or confidence-aware ceiling. The agent could stop early when retrieval similarity scores are high, or extend beyond 3 rounds for genuinely complex queries within a cost budget.
 
-**Implementation:**
-```python
-keyword_results = bm25_retriever.invoke(query)
-vector_results = vector_retriever.invoke(query)
-merged = rerank(keyword_results + vector_results)
-```
+**Tool-level retry with backoff.** Wrap tool execution in a retry mechanism for transient failures (API timeouts, rate limits). Distinguish between retryable errors and permanent failures (unknown tool, malformed query).
 
-**Benefit:** Recovers from poor embeddings on technical jargon.  
-**Cost:** Added latency (~2–5x slower).
+**Conversation memory.** Add optional session state persistence so multi-turn workflows don't require full re-specification. A lightweight approach: carry forward the last N messages as context for follow-up questions.
 
-### Fine-Tuned Embeddings
-**Idea:** Fine-tune `text-embedding-3-small` on ECU domain examples.
+**Input classifier for out-of-scope rejection.** Add a fast, cheap classifier (e.g., a fine-tuned small model or keyword heuristic) before the agent node to hard-reject clearly irrelevant queries without consuming LLM tokens.
 
-**Implementation:** Train on 100–500 examples of (query, relevant_chunk) pairs.  
-**Benefit:** Higher semantic precision for domain-specific terminology.  
-**Cost:** Data annotation effort, ongoing model maintenance.
+### Cost & Operations
 
-### Structured Output
-**Idea:** Return structured JSON instead of plain text.
+**Semantic query cache.** Cache query embeddings and results with a TTL. Identical or near-identical questions (above a cosine similarity threshold) return cached answers, reducing embedding API calls and latency.
 
-**Implementation:**
-```python
-output_schema = {
-    "answer": str,
-    "sources": list[str],
-    "confidence": float,
-    "reasoning": str
-}
-```
+**Per-query cost tracking and budget enforcement.** Track token usage per query at runtime. Set a per-query cost ceiling and a daily budget — circuit-break when exceeded to prevent runaway spend.
 
-**Benefit:** API consumers can parse structure; improve downstream processing.
+**Fallback provider chain.** Configure a secondary LLM/embedding provider. If the primary (e.g., OpenAI) fails health checks, route to the fallback (e.g., Databricks-hosted model) automatically.
+
+### Evaluation
+
+**Confidence scoring.** Return a confidence signal alongside each answer — derived from retrieval similarity scores or LLM self-assessment. Allows API consumers to route low-confidence answers to human review.
+
+**Judge calibration.** Run a pilot of 50–100 questions scored by both the LLM judge and human raters. Compute inter-rater agreement (Cohen's kappa) and adjust the judge prompt or scoring rubric to align with human judgment.
+
+**Weighted scoring dimensions.** Assign higher weight to faithfulness and correctness than to format compliance. For a safety-critical domain, a hallucinated specification is far more costly than a formatting preference violation.
+
+**Failure-mode metrics.** Add disaggregated metrics: false rejection rate, per-category accuracy (OTA, temperature, CAN bus, etc.), and over-confidence detection. Enable slicing evaluation results by question type and document source.
+
+> For a detailed scalability analysis with concrete implementation steps, see [SCALABILITY.md](SCALABILITY.md).
 
 ---
 
-## 4.3 Known Trade-Offs
-
-| Decision | Chosen | Alternative | Why |
-|---|---|---|---|
-| Indexing | Dual-index (7 + 4 chunks) | Single index (11 chunks) | Prevents ECU-800 dominance on cross-series queries |
-| Chunking | Section-based | Fixed-token (512) | Preserves table integrity |
-| Embedding | `text-embedding-3-small` | `-large` (3K dims) | No accuracy gain at 11-chunk scale |
-| Iteration | Hard limit (3) | Adaptive (confidence-based) | Deterministic safety; prevents infinite loops |
-| State | Explicit (graph-based) | Message-only | Enables per-node diagnostics without LLM hacks |
-
----
-
-## 4.4 Success Metrics
+## 4.3 Success Metrics
 
 The agent is considered production-ready when:
 
@@ -781,11 +730,8 @@ The agent is considered production-ready when:
 
 ## Summary
 
-The ME Engineering Assistant is a **production-grade RAG agent** built on:
-- **Explicit agent graph** with deterministic safety limits
-- **Dual-index retrieval** for balanced coverage across product lines
-- **Section-based chunking** optimized for technical specifications
-- **Model abstraction** enabling seamless OpenAI ↔ Databricks switching
-- **Comprehensive evaluation** with release gates and continuous monitoring
+The ME Engineering Assistant is a production-grade agentic RAG system built for Bosch's ECU engineering domain, prioritizing correctness, observability, and deployment readiness.
 
-The architecture prioritizes **correctness, observability, and operational simplicity** over generality, making it suitable for Bosch's ECU engineering domain and extensible to related product lines.
+- **Technical Excellence:** Custom LangGraph StateGraph with three query types (single-series, cross-series, out-of-scope), multi-layer anti-hallucination prompts, modular codebase with typed exception hierarchy
+- **Production Readiness:** MLflow pyfunc wrapper, quality-gated model registration, Databricks Asset Bundle for one-command deployment, automated smoke test + evaluation pipeline
+- **Strategic Thinking:** Documented trade-offs for all key design decisions, evaluation strategy, scalability analysis with concrete migration paths (see [SCALABILITY.md](SCALABILITY.md))

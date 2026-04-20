@@ -130,9 +130,10 @@ def _run_smoke_test(agent) -> dict[str, float]:
     for q in _SMOKE_QUESTIONS:
         start = time.perf_counter()
         try:
-            answer = query_agent(agent, q)
+            result = query_agent(agent, q)
             elapsed = time.perf_counter() - start
             latencies.append(elapsed)
+            answer = result["answer"]
             ok = bool(answer) and not answer.lower().startswith(
                 ("error", "configuration error", "llm error",
                  "retrieval error", "embedding error")
@@ -255,6 +256,9 @@ def main() -> int:
     # Fail fast on missing env vars rather than mid-run.
     validate_config()
 
+    # Use a local SQLite database so that both experiment metadata and
+    # artifacts live in the same store, visible from `mlflow ui`.
+    mlflow.set_tracking_uri(f"sqlite:///{_REPO_ROOT / 'mlflow.db'}")
     mlflow.set_experiment(args.experiment_name)
 
     logger.info("Loading documents for chunk-count telemetry...")

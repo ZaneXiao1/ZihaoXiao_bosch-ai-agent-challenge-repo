@@ -54,6 +54,12 @@ mlflow.db
 eval_*.json
 *_latest.json
 
+# Challenge documents and references (not part of deliverable)
+Other\ Documents/
+
+# Challenge documents and references (not part of deliverable)
+Other\ Documents/
+
 # OS
 .DS_Store
 Thumbs.db

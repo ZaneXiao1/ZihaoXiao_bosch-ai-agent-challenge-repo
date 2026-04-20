@@ -70,8 +70,8 @@ class MEAssistantModel(mlflow.pyfunc.PythonModel):
     def predict(
         self,
         context: mlflow.pyfunc.PythonModelContext,
-        model_input: Any,
-        params: dict[str, Any] | None = None,
+        model_input,
+        params=None,
     ) -> list[str]:
         """Process user queries and return agent responses.
 

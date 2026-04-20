@@ -36,3 +36,6 @@ where = ["src"]
 markers = [
     "integration: tests that require a live API key (deselect with -m 'not integration')",
 ]
+filterwarnings = [
+    "ignore::UserWarning:mlflow.*",
+]
