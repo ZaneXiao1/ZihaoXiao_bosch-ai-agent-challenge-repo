@@ -72,6 +72,15 @@ Runs the official 10-question test set with keyword matching. Pass threshold: 8/
 python scripts/run_eval.py
 ```
 
+By default this runs the 60-question extended set `tests/test_queries_extended.csv`.
+You can also switch datasets explicitly:
+
+```bash
+python scripts/run_eval.py --dataset official
+python scripts/run_eval.py --dataset extended
+python scripts/run_eval.py --csv tests/test_queries_extended.csv
+```
+
 Scores answers across 5 dimensions (correctness, completeness, faithfulness, relevance, format compliance) using GPT-4o as judge. Results saved to `eval_results.json`.
 
 ### Full Pipeline: Train + Evaluate + Log to MLflow

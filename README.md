@@ -268,7 +268,7 @@ MEAssistantError (base)
 ├── EmbeddingError            # Vector store creation failed
 ├── RetrievalError            # Tool invocation or chunk retrieval failed
 ├── LLMError                  # LLM API auth, rate limit, timeout, or malformed response
-└── PreprocessingError        # Document loading or chunking failed
+└── DocumentLoadError         # Document loading or chunking failed
 ```
 
 Each exception:
@@ -326,23 +326,44 @@ For local installation, configuration, and running the agent, see [QUICKSTART.md
 The `databricks.yml` defines two deployment targets:
 
 ```yaml
-# databricks.yml (simplified)
-targets:
-  dev:
-    workspace:
-      host: "https://your-dev-workspace.databricks.com"
-  prod:
-    workspace:
-      host: "https://your-prod-workspace.databricks.com"
+# databricks.yml (simplified — see file for full config)
+artifacts:
+  me_assistant_wheel:
+    type: whl
+    build: python -m build --wheel
+    path: .
 
 resources:
   jobs:
     train_and_log_model:
       tasks:
-        - task_key: main
-          notebook_path: ./scripts/train_and_log_model
-          environment_variables:
-            MODEL_PROVIDER: "databricks"
+        - task_key: train_and_log
+          job_cluster_key: job_cluster
+          spark_python_task:
+            python_file: ./scripts/train_and_log_model.py
+            parameters:
+              - --experiment-name
+              - ${var.experiment_name}
+              - --registered-model-name
+              - ${var.registered_model_name}
+          libraries:
+            - whl: ./dist/*.whl
+      job_clusters:
+        - job_cluster_key: job_cluster
+          new_cluster:
+            spark_version: 15.4.x-scala2.12
+            spark_env_vars:
+              MODEL_PROVIDER: ${var.model_provider}
+              OPENAI_API_KEY: "{{secrets/${var.secret_scope}/openai_api_key}}"
+
+targets:
+  dev:
+    mode: development
+    default: true
+  prod:
+    mode: production
+    variables:
+      experiment_name: /Shared/me-engineering-assistant-prod
 ```
 
 ### Deploy & Run
@@ -560,6 +581,14 @@ python scripts/run_evaluation.py
 
 ```bash
 python scripts/run_eval.py
+```
+
+By default this runs the 60-question extended dataset. You can also choose:
+
+```bash
+python scripts/run_eval.py --dataset official
+python scripts/run_eval.py --dataset extended
+python scripts/run_eval.py --csv tests/test_queries_extended.csv
 ```
 
 **Dataset:** `tests/test_queries_extended.csv` (60 extended questions)  

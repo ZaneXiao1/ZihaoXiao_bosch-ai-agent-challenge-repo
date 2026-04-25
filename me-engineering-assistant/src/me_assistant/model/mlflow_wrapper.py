@@ -176,11 +176,6 @@ def log_model(
         artifact_path=artifact_path,
         python_model=MEAssistantModel(),
         pip_requirements=_PIP_REQUIREMENTS,
-        artifacts={
-            "ecu_700_doc": "src/me_assistant/data/ECU-700_Series_Manual.md",
-            "ecu_800_base_doc": "src/me_assistant/data/ECU-800_Series_Base.md",
-            "ecu_800_plus_doc": "src/me_assistant/data/ECU-800_Series_Plus.md",
-        },
         signature=_build_signature(),
         input_example=_build_input_example(),
         registered_model_name=registered_model_name,

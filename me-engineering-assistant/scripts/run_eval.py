@@ -3,9 +3,11 @@
 Run the RAG answer-quality evaluation and produce a report.
 
 Usage:
-    python scripts/run_eval.py                       # run all test cases
-    python scripts/run_eval.py --csv path/to.csv     # custom test set
-    python scripts/run_eval.py --output results.json # save raw results
+    python scripts/run_eval.py                                # run extended (60Q)
+    python scripts/run_eval.py --dataset official            # run official (10Q)
+    python scripts/run_eval.py --dataset extended            # run extended (60Q)
+    python scripts/run_eval.py --csv path/to.csv            # custom test set
+    python scripts/run_eval.py --output results.json        # save raw results
 
 The script will:
 1. Initialise the RAG agent
@@ -24,10 +26,17 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from me_assistant.agent.graph import create_agent
 from me_assistant.evaluation.evaluator import (
+    DEFAULT_TEST_SET,
     DIMENSIONS,
     run_evaluation,
     summarize_results,
 )
+
+_TESTS_DIR = Path(__file__).parent.parent / "tests"
+_DATASET_PATHS = {
+    "official": DEFAULT_TEST_SET,
+    "extended": _TESTS_DIR / "test_queries_extended.csv",
+}
 
 
 def print_report(results, summary):
@@ -78,8 +87,25 @@ def print_report(results, summary):
     print("=" * 90 + "\n")
 
 
+def _resolve_csv_path(dataset: str, csv_path: str | None) -> Path:
+    """Return the CSV path to evaluate.
+
+    Custom ``--csv`` takes precedence. Otherwise the named built-in dataset
+    is used.
+    """
+    if csv_path:
+        return Path(csv_path)
+    return _DATASET_PATHS[dataset]
+
+
 def main():
     parser = argparse.ArgumentParser(description="RAG Answer Quality Evaluation")
+    parser.add_argument(
+        "--dataset",
+        choices=sorted(_DATASET_PATHS),
+        default="extended",
+        help="Built-in dataset to run when --csv is not provided (default: extended).",
+    )
     parser.add_argument("--csv", default=None, help="Path to test CSV file")
     parser.add_argument("--output", default="eval_results.json",
                         help="Output JSON file for detailed results (default: eval_results.json)")
@@ -90,11 +116,13 @@ def main():
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
+    csv_path = _resolve_csv_path(args.dataset, args.csv)
+
     print("Initialising agent...")
     agent = create_agent()
 
-    print("Running evaluation...")
-    results = run_evaluation(agent, csv_path=args.csv)
+    print(f"Running evaluation on: {csv_path}")
+    results = run_evaluation(agent, csv_path=str(csv_path))
     summary = summarize_results(results)
 
     # Print human-readable report
@@ -103,6 +131,8 @@ def main():
     # Save detailed results to JSON
     output_path = Path(args.output)
     output_data = {
+        "dataset": args.dataset if not args.csv else "custom",
+        "csv_path": str(csv_path),
         "summary": summary,
         "results": [r.to_dict() for r in results],
     }
