@@ -313,11 +313,25 @@ Key design decisions:
 
 - **Change detection, not full rebuild.** Each document is hashed on ingestion. On update, only documents whose hash changed are re-chunked and re-embedded. This reduces a 10K-document update from minutes to seconds.
 
+- **Stable chunk IDs.** Each chunk uses a deterministic ID such as `doc_id::section_id::chunk_index`. This lets the ingestion job upsert the exact changed chunks instead of creating duplicates every time a document is reprocessed.
+
+- **Upsert for added/modified documents.** New documents are chunked, embedded, and inserted into Milvus. Modified documents follow the same path, but matching chunk IDs are overwritten with the latest vector, text, and metadata.
+
 - **Chunk-level versioning.** Each chunk carries a `doc_version` metadata field tied to the source document's commit hash or timestamp. This enables rollback — if a bad document update degrades answer quality, revert to the previous chunk version without re-embedding the entire corpus.
 
 - **Deletion propagation.** When a document is retired, all its chunks are deleted from the vector store by `doc_id` filter. Without this, stale chunks persist and the agent answers from outdated specs.
 
 - **Zero-downtime updates.** The agent reads from the vector store at query time, not at startup. Upserts are atomic at the chunk level — ongoing queries see either the old or new version of a chunk, never a partial state.
+
+**Update flow summary:**
+
+```
+New file      → chunk + embed → upsert chunks into Milvus partition
+Modified file → hash changed  → re-chunk + re-embed only that file → upsert changed chunks
+Deleted file  → doc missing   → delete all chunks where doc_id matches
+```
+
+This keeps the serving path simple: the agent always queries Milvus, while a separate ingestion job keeps the index fresh in the background.
 
 **Tool registry auto-update:**
 
